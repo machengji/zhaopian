@@ -211,7 +211,7 @@ body {
 .action-row {
   margin-top: 16px;
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -241,6 +241,56 @@ body {
   color: #f5f8fc;
   padding: 10px 12px;
   white-space: nowrap;
+}
+
+#exportPresetBtn {
+  white-space: normal;
+  line-height: 1.2;
+}
+
+.btn-mini {
+  padding: 6px 10px;
+  border-radius: 9px;
+  font-size: 0.74rem;
+}
+
+.xmp-panel {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.xmp-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.xmp-panel-head h3 {
+  margin: 0;
+  font-size: 0.92rem;
+}
+
+.xmp-hint {
+  margin: 0 0 10px;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.xmp-preview {
+  margin: 10px 0 0;
+  min-height: 76px;
+  max-height: 180px;
+  overflow: auto;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.22);
+  padding: 10px;
+  white-space: pre-wrap;
+  font-size: 0.72rem;
+  color: var(--text-muted);
 }
 
 .btn:disabled {

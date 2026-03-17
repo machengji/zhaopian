@@ -53,8 +53,18 @@ function runTransfer(payload, onProgress) {
   const out = new Uint8ClampedArray(targetRgba.length);
   const n = targetLab.length / 3;
   const chunk = Math.max(1, Math.floor(n / 10));
-  const epsilon = 1e-6;
-  const preset = options.preset;
+  const epsilon = 1e-4;
+  const preset = options.preset ?? {
+    contrast: 1,
+    lBias: 0,
+    aScale: 1,
+    bScale: 1,
+    aBias: 0,
+    bBias: 0,
+  };
+  const strength = clamp(Number.isFinite(options.strength) ? options.strength : 1, 0, 1);
+  const saturation = Number.isFinite(options.saturation) ? options.saturation : 1;
+  const lumaPreserve = clamp(Number.isFinite(options.lumaPreserve) ? options.lumaPreserve : 0, 0, 1);
 
   for (let i = 0; i < n; i += 1) {
     if (i % chunk === 0) {
@@ -66,9 +76,22 @@ function runTransfer(payload, onProgress) {
     const a = targetLab[j + 1];
     const b = targetLab[j + 2];
 
-    const lMapped =
-      ((l - targetStats.mean[0]) * sourceStats.std[0]) / (targetStats.std[0] + epsilon) +
-      sourceStats.mean[0];
+    if (strength <= epsilon) {
+      out[p] = targetRgba[p];
+      out[p + 1] = targetRgba[p + 1];
+      out[p + 2] = targetRgba[p + 2];
+      out[p + 3] = targetRgba[p + 3];
+      continue;
+    }
+
+    const lMapped = reinhardMapChannel(
+      l,
+      targetStats.mean[0],
+      targetStats.std[0],
+      sourceStats.mean[0],
+      sourceStats.std[0],
+      epsilon
+    );
 
     let aMapped;
     let bMapped;
@@ -78,25 +101,38 @@ function runTransfer(payload, onProgress) {
       aMapped = enhanceMat[0] * da + enhanceMat[1] * db + sourceAB.mean[0];
       bMapped = enhanceMat[2] * da + enhanceMat[3] * db + sourceAB.mean[1];
     } else {
-      aMapped =
-        ((a - targetStats.mean[1]) * sourceStats.std[1]) / (targetStats.std[1] + epsilon) +
-        sourceStats.mean[1];
-      bMapped =
-        ((b - targetStats.mean[2]) * sourceStats.std[2]) / (targetStats.std[2] + epsilon) +
-        sourceStats.mean[2];
+      aMapped = reinhardMapChannel(
+        a,
+        targetStats.mean[1],
+        targetStats.std[1],
+        sourceStats.mean[1],
+        sourceStats.std[1],
+        epsilon
+      );
+      bMapped = reinhardMapChannel(
+        b,
+        targetStats.mean[2],
+        targetStats.std[2],
+        sourceStats.mean[2],
+        sourceStats.std[2],
+        epsilon
+      );
     }
 
-    const lBlended = lMapped * (1 - options.lumaPreserve) + l * options.lumaPreserve;
-    const lStyled = (lBlended - 50) * preset.contrast + 50 + preset.lBias;
-    const aStyled = aMapped * options.saturation * preset.aScale + preset.aBias;
-    const bStyled = bMapped * options.saturation * preset.bScale + preset.bBias;
+    const lPreserved = lerp(lMapped, l, lumaPreserve);
+    const lStyled = (lPreserved - 50) * preset.contrast + 50 + preset.lBias;
+    const aStyled = aMapped * saturation * preset.aScale + preset.aBias;
+    const bStyled = bMapped * saturation * preset.bScale + preset.bBias;
 
-    const rgb = labToRgb(clamp(lStyled, 0, 100), clamp(aStyled, -128, 127), clamp(bStyled, -128, 127));
-    const blend = options.strength;
+    const lFinal = lerp(l, lStyled, strength);
+    const aFinal = lerp(a, aStyled, strength);
+    const bFinal = lerp(b, bStyled, strength);
 
-    out[p] = clamp(targetRgba[p] * (1 - blend) + rgb[0] * blend, 0, 255);
-    out[p + 1] = clamp(targetRgba[p + 1] * (1 - blend) + rgb[1] * blend, 0, 255);
-    out[p + 2] = clamp(targetRgba[p + 2] * (1 - blend) + rgb[2] * blend, 0, 255);
+    const rgb = labToRgb(clamp(lFinal, 0, 100), clamp(aFinal, -128, 127), clamp(bFinal, -128, 127));
+
+    out[p] = rgb[0];
+    out[p + 1] = rgb[1];
+    out[p + 2] = rgb[2];
     out[p + 3] = targetRgba[p + 3];
   }
 
@@ -304,6 +340,15 @@ function mul2x2(a, b) {
     a[2] * b[0] + a[3] * b[2],
     a[2] * b[1] + a[3] * b[3],
   ];
+}
+
+function reinhardMapChannel(value, sourceMean, sourceStd, targetMean, targetStd, epsilon) {
+  const safeStd = Math.max(sourceStd, epsilon);
+  return ((value - sourceMean) * targetStd) / safeStd + targetMean;
+}
+
+function lerp(from, to, t) {
+  return from + (to - from) * t;
 }
 
 function rgbToLab(r, g, b) {

@@ -4,6 +4,23 @@ const sourceThumb = document.getElementById("sourceThumb");
 const targetThumb = document.getElementById("targetThumb");
 const processBtn = document.getElementById("processBtn");
 const downloadBtn = document.getElementById("downloadBtn");
+const exportPresetBtn = document.getElementById("exportPresetBtn");
+const xmpResetBtn = document.getElementById("xmpResetBtn");
+const xmpPreviewHint = document.getElementById("xmpPreviewHint");
+const xmpPreviewText = document.getElementById("xmpPreviewText");
+const xmpExposureRange = document.getElementById("xmpExposureRange");
+const xmpExposureValue = document.getElementById("xmpExposureValue");
+const xmpTemperatureRange = document.getElementById("xmpTemperatureRange");
+const xmpTemperatureValue = document.getElementById("xmpTemperatureValue");
+const xmpTintRange = document.getElementById("xmpTintRange");
+const xmpTintValue = document.getElementById("xmpTintValue");
+const xmpHslChannel = document.getElementById("xmpHslChannel");
+const xmpHslHueRange = document.getElementById("xmpHslHueRange");
+const xmpHslHueValue = document.getElementById("xmpHslHueValue");
+const xmpHslSaturationRange = document.getElementById("xmpHslSaturationRange");
+const xmpHslSaturationValue = document.getElementById("xmpHslSaturationValue");
+const xmpHslLuminanceRange = document.getElementById("xmpHslLuminanceRange");
+const xmpHslLuminanceValue = document.getElementById("xmpHslLuminanceValue");
 const statusText = document.getElementById("statusText");
 const statsText = document.getElementById("statsText");
 const algorithmSelect = document.getElementById("algorithmSelect");
@@ -54,12 +71,21 @@ const PRESET_LIBRARY = {
   social: { name: "社媒高对比", contrast: 1.11, lBias: -0.8, aScale: 1.1, bScale: 1.08, aBias: 1.2, bBias: 3.2 },
 };
 
+const XMP_HSL_CHANNELS = ["red", "orange", "yellow", "green", "aqua", "blue", "purple", "magenta"];
+
 const state = {
   sourceImg: null,
   targetImg: null,
+  sourceFileName: "",
+  targetFileName: "",
   sourceThumbUrl: null,
   targetThumbUrl: null,
   outputBlobUrl: null,
+  latestTransfer: null,
+  xmpGenerator: typeof window.XMPGenerator === "function" ? new window.XMPGenerator() : null,
+  xmpBaseSettings: null,
+  xmpManualSettings: null,
+  xmpHslChannel: "orange",
   worker: null,
   workerJobs: new Map(),
   nextJobId: 1,
@@ -71,6 +97,8 @@ sourceInput.addEventListener("change", async (event) => {
   const file = event.target.files?.[0];
   if (!file) return;
   state.sourceImg = await fileToImage(file);
+  state.sourceFileName = file.name;
+  invalidateLatestTransfer();
   setThumbPreview("source", file);
   setStatus("参考图已加载");
 });
@@ -79,6 +107,8 @@ targetInput.addEventListener("change", async (event) => {
   const file = event.target.files?.[0];
   if (!file) return;
   state.targetImg = await fileToImage(file);
+  state.targetFileName = file.name;
+  invalidateLatestTransfer();
   setThumbPreview("target", file);
   drawScaledImage(state.targetImg, beforeCanvas, beforeCtx, QUALITY_PROFILES.mobile.previewMaxPixels);
   drawScaledImage(state.targetImg, afterCanvas, afterCtx, QUALITY_PROFILES.mobile.previewMaxPixels);
@@ -92,6 +122,32 @@ compareSlider.addEventListener("input", () => {
 strengthRange.addEventListener("input", syncUiOutputs);
 saturationRange.addEventListener("input", syncUiOutputs);
 lumaPreserveRange.addEventListener("input", syncUiOutputs);
+xmpExposureRange?.addEventListener("input", () => {
+  updateXmpBasicSetting("exposure", Number(xmpExposureRange.value));
+});
+xmpTemperatureRange?.addEventListener("input", () => {
+  updateXmpBasicSetting("temperature", Number(xmpTemperatureRange.value));
+});
+xmpTintRange?.addEventListener("input", () => {
+  updateXmpBasicSetting("tint", Number(xmpTintRange.value));
+});
+xmpHslChannel?.addEventListener("change", () => {
+  state.xmpHslChannel = xmpHslChannel.value || "orange";
+  syncXmpHslControls();
+  renderXmpPreview();
+});
+xmpHslHueRange?.addEventListener("input", () => {
+  updateXmpHslSetting("hue", Number(xmpHslHueRange.value));
+});
+xmpHslSaturationRange?.addEventListener("input", () => {
+  updateXmpHslSetting("saturation", Number(xmpHslSaturationRange.value));
+});
+xmpHslLuminanceRange?.addEventListener("input", () => {
+  updateXmpHslSetting("luminance", Number(xmpHslLuminanceRange.value));
+});
+xmpResetBtn?.addEventListener("click", () => {
+  resetXmpAdjustments();
+});
 
 recommendBtn.addEventListener("click", async () => {
   if (!state.sourceImg || !state.targetImg) {
@@ -112,6 +168,7 @@ processBtn.addEventListener("click", async () => {
 
   processBtn.disabled = true;
   downloadBtn.disabled = true;
+  invalidateLatestTransfer();
   state.fullRenderPromise = null;
   state.fullRenderReady = false;
 
@@ -131,9 +188,16 @@ processBtn.addEventListener("click", async () => {
     drawImageData(previewResult.outputImageData, afterCanvas, afterCtx);
     afterLayer.style.width = `${compareSlider.value}%`;
     statsText.textContent = renderStats(previewResult, options, "preview");
+    state.latestTransfer = {
+      stats: previewResult.stats,
+      options,
+      createdAt: Date.now(),
+    };
+    initializeXmpFromLatestTransfer();
 
     await setDownloadFromImageData(previewResult.outputImageData);
     downloadBtn.disabled = false;
+    exportPresetBtn.disabled = !state.xmpGenerator || !state.xmpManualSettings;
     setStatus("预览完成，可直接下载；若开启高清导出会在后台继续生成");
 
     if (hqExportToggle.checked) {
@@ -171,6 +235,36 @@ downloadBtn.addEventListener("click", async () => {
   link.href = state.outputBlobUrl;
   link.download = `toneport-${Date.now()}.png`;
   link.click();
+});
+
+exportPresetBtn.addEventListener("click", () => {
+  if (!state.latestTransfer) {
+    setStatus("请先完成一次迁移，再生成 LR 预设", true);
+    return;
+  }
+  if (!state.xmpGenerator) {
+    setStatus("XMP generator 未加载，请刷新页面后重试", true);
+    return;
+  }
+
+  try {
+    const presetName = buildPresetName(state.latestTransfer.options);
+    if (!state.xmpManualSettings) {
+      initializeXmpFromLatestTransfer();
+    }
+    if (!state.xmpManualSettings) {
+      throw new Error("No XMP settings available");
+    }
+    const settings = { ...state.xmpManualSettings };
+    const xmpContent = state.xmpGenerator.generateXMP(settings, presetName);
+
+    const fileName = `${sanitizeFileStem(presetName)}.xmp`;
+    downloadTextFile(fileName, xmpContent, "application/rdf+xml");
+    setStatus(`LR 预设已导出：${fileName}`);
+    statsText.textContent += `\n\n[xmp] Exposure=${settings.exposure.toFixed(2)}, Temp=${Math.round(settings.temperature)}, Tint=${Math.round(settings.tint)}`;
+  } catch (error) {
+    setStatus(`生成 LR 预设失败: ${error.message}`, true);
+  }
 });
 
 window.addEventListener("beforeunload", () => {
@@ -280,6 +374,7 @@ async function runHighQualityExport(options, qualityProfile) {
 function getProcessOptions() {
   return {
     mode: algorithmSelect.value,
+    presetKey: presetSelect.value,
     preset: PRESET_LIBRARY[presetSelect.value] ?? PRESET_LIBRARY.none,
     strength: Number(strengthRange.value) / 100,
     saturation: Number(saturationRange.value) / 100,
@@ -344,6 +439,214 @@ function canvasToObjectUrl(canvas) {
       resolve(URL.createObjectURL(blob));
     }, "image/png");
   });
+}
+
+function invalidateLatestTransfer() {
+  state.latestTransfer = null;
+  state.xmpBaseSettings = null;
+  state.xmpManualSettings = null;
+  exportPresetBtn.disabled = true;
+  setXmpControlsEnabled(false);
+  renderXmpPreview();
+}
+
+function buildPresetName(options) {
+  const sourceStem = stripFileExtension(state.sourceFileName || "source");
+  const targetStem = stripFileExtension(state.targetFileName || "target");
+  const mode = options?.mode || "reinhard";
+  const preset = options?.presetKey || "none";
+  const timestamp = new Date().toISOString().slice(0, 10);
+  return `TonePort-${mode}-${preset}-${sourceStem}-to-${targetStem}-${timestamp}`;
+}
+
+function stripFileExtension(fileName) {
+  return String(fileName).replace(/\.[^.]+$/, "");
+}
+
+function sanitizeFileStem(fileName) {
+  const cleaned = String(fileName)
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return cleaned.slice(0, 96) || `toneport-preset-${Date.now()}`;
+}
+
+function downloadTextFile(fileName, text, mimeType) {
+  const blob = new Blob([text], { type: mimeType || "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function initializeXmpFromLatestTransfer() {
+  if (!state.latestTransfer || !state.xmpGenerator) {
+    setXmpControlsEnabled(false);
+    renderXmpPreview();
+    return;
+  }
+
+  const presetName = buildPresetName(state.latestTransfer.options);
+  const { settings } = state.xmpGenerator.generateFromTransfer({
+    sourceStats: state.latestTransfer.stats.source,
+    targetStats: state.latestTransfer.stats.target,
+    sourceAB: state.latestTransfer.stats.sourceAB,
+    targetAB: state.latestTransfer.stats.targetAB,
+    options: state.latestTransfer.options,
+    presetName,
+  });
+
+  state.xmpBaseSettings = { ...settings };
+  state.xmpManualSettings = { ...settings };
+  if (!XMP_HSL_CHANNELS.includes(state.xmpHslChannel)) {
+    state.xmpHslChannel = "orange";
+  }
+  setXmpControlsEnabled(true);
+  syncXmpControls();
+  renderXmpPreview();
+}
+
+function resetXmpAdjustments() {
+  if (!state.xmpBaseSettings) return;
+  state.xmpManualSettings = { ...state.xmpBaseSettings };
+  syncXmpControls();
+  renderXmpPreview();
+  setStatus("XMP parameters reset to auto values");
+}
+
+function updateXmpBasicSetting(key, rawValue) {
+  if (!state.xmpManualSettings) return;
+  let nextValue = Number(rawValue);
+  if (!Number.isFinite(nextValue)) return;
+
+  if (key === "exposure") nextValue = clampNum(nextValue, -5, 5);
+  if (key === "temperature") nextValue = clampNum(Math.round(nextValue / 50) * 50, 2000, 50000);
+  if (key === "tint") nextValue = clampNum(Math.round(nextValue), -150, 150);
+
+  state.xmpManualSettings[key] = nextValue;
+  syncXmpBasicControls();
+  renderXmpPreview();
+}
+
+function updateXmpHslSetting(kind, rawValue) {
+  if (!state.xmpManualSettings) return;
+  const keys = getXmpHslKeys(state.xmpHslChannel);
+  const value = clampNum(Math.round(Number(rawValue)), -100, 100);
+  if (!Number.isFinite(value)) return;
+
+  if (kind === "hue") state.xmpManualSettings[keys.hue] = value;
+  if (kind === "saturation") state.xmpManualSettings[keys.saturation] = value;
+  if (kind === "luminance") state.xmpManualSettings[keys.luminance] = value;
+
+  syncXmpHslControls();
+  renderXmpPreview();
+}
+
+function syncXmpControls() {
+  if (!state.xmpManualSettings) return;
+  syncXmpBasicControls();
+  syncXmpHslControls();
+}
+
+function syncXmpBasicControls() {
+  if (!state.xmpManualSettings) return;
+  if (!xmpExposureRange || !xmpTemperatureRange || !xmpTintRange) return;
+  if (!xmpExposureValue || !xmpTemperatureValue || !xmpTintValue) return;
+  xmpExposureRange.value = Number(state.xmpManualSettings.exposure || 0).toFixed(2);
+  xmpTemperatureRange.value = String(Math.round(state.xmpManualSettings.temperature || 5500));
+  xmpTintRange.value = String(Math.round(state.xmpManualSettings.tint || 0));
+
+  xmpExposureValue.textContent = Number(state.xmpManualSettings.exposure || 0).toFixed(2);
+  xmpTemperatureValue.textContent = String(Math.round(state.xmpManualSettings.temperature || 5500));
+  xmpTintValue.textContent = String(Math.round(state.xmpManualSettings.tint || 0));
+}
+
+function syncXmpHslControls() {
+  if (!state.xmpManualSettings) return;
+  if (!xmpHslChannel || !xmpHslHueRange || !xmpHslSaturationRange || !xmpHslLuminanceRange) return;
+  if (!xmpHslHueValue || !xmpHslSaturationValue || !xmpHslLuminanceValue) return;
+  const channel = XMP_HSL_CHANNELS.includes(state.xmpHslChannel) ? state.xmpHslChannel : "orange";
+  state.xmpHslChannel = channel;
+  xmpHslChannel.value = channel;
+
+  const keys = getXmpHslKeys(channel);
+  const hue = Math.round(state.xmpManualSettings[keys.hue] || 0);
+  const sat = Math.round(state.xmpManualSettings[keys.saturation] || 0);
+  const lum = Math.round(state.xmpManualSettings[keys.luminance] || 0);
+
+  xmpHslHueRange.value = String(hue);
+  xmpHslSaturationRange.value = String(sat);
+  xmpHslLuminanceRange.value = String(lum);
+  xmpHslHueValue.textContent = String(hue);
+  xmpHslSaturationValue.textContent = String(sat);
+  xmpHslLuminanceValue.textContent = String(lum);
+}
+
+function getXmpHslKeys(channel) {
+  const safe = XMP_HSL_CHANNELS.includes(channel) ? channel : "orange";
+  const cap = safe.slice(0, 1).toUpperCase() + safe.slice(1);
+  return {
+    hue: `hue${cap}`,
+    saturation: `saturation${cap}`,
+    luminance: `luminance${cap}`,
+    label: cap,
+  };
+}
+
+function setXmpControlsEnabled(enabled) {
+  const active = Boolean(enabled && state.xmpGenerator);
+  const controls = [
+    xmpResetBtn,
+    xmpExposureRange,
+    xmpTemperatureRange,
+    xmpTintRange,
+    xmpHslChannel,
+    xmpHslHueRange,
+    xmpHslSaturationRange,
+    xmpHslLuminanceRange,
+  ];
+
+  for (const control of controls) {
+    if (!control) continue;
+    control.disabled = !active;
+  }
+
+  if (!xmpPreviewHint) return;
+  if (!state.xmpGenerator) {
+    xmpPreviewHint.textContent = "XMP generator missing. Refresh the page to load preset export tools.";
+    return;
+  }
+  xmpPreviewHint.textContent = active
+    ? "Auto-generated from current transfer. Adjust values below, then export .xmp."
+    : "Run one transfer first, then tweak LR parameters before export.";
+}
+
+function renderXmpPreview() {
+  if (!xmpPreviewText) return;
+  const settings = state.xmpManualSettings;
+  if (!settings) {
+    xmpPreviewText.textContent = "No XMP parameters yet.";
+    return;
+  }
+
+  const keys = getXmpHslKeys(state.xmpHslChannel);
+  const presetKey = state.latestTransfer?.options?.presetKey || "none";
+  xmpPreviewText.textContent = [
+    `Exposure2012=${Number(settings.exposure).toFixed(2)}`,
+    `Temperature=${Math.round(settings.temperature)} | Tint=${Math.round(settings.tint)}`,
+    `Vibrance=${Math.round(settings.vibrance)} | Saturation=${Math.round(settings.saturation)}`,
+    `Highlights=${Math.round(settings.highlights)} | Shadows=${Math.round(settings.shadows)}`,
+    `Whites=${Math.round(settings.whites)} | Blacks=${Math.round(settings.blacks)}`,
+    `HSL(${keys.label}): Hue=${Math.round(settings[keys.hue])}, Sat=${Math.round(settings[keys.saturation])}, Lum=${Math.round(settings[keys.luminance])}`,
+    `preset=${presetKey}`,
+  ].join("\n");
+}
+
+function clampNum(value, min, max) {
+  return Math.min(max, Math.max(min, value));
 }
 
 function fileToImage(file) {
@@ -504,4 +807,7 @@ function detectDefaultQuality() {
 
 qualitySelect.value = detectDefaultQuality();
 syncUiOutputs();
+setXmpControlsEnabled(false);
+renderXmpPreview();
 afterLayer.style.width = `${compareSlider.value}%`;
+

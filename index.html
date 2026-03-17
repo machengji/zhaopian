@@ -115,7 +115,67 @@
           <div class="action-row">
             <button id="processBtn" class="btn btn-primary">3. 开始迁移</button>
             <button id="downloadBtn" class="btn btn-secondary" disabled>下载结果</button>
+            <button id="exportPresetBtn" class="btn btn-ghost" type="button" disabled>下载 LR 预设(.xmp)</button>
           </div>
+          <section id="xmpPanel" class="xmp-panel">
+            <div class="xmp-panel-head">
+              <h3>XMP Parameter Preview</h3>
+              <button id="xmpResetBtn" class="btn btn-ghost btn-mini" type="button" disabled>Reset Auto</button>
+            </div>
+            <p id="xmpPreviewHint" class="xmp-hint">Run one transfer first, then tweak LR parameters before export.</p>
+
+            <label class="inline-control">
+              <span>Exposure</span>
+              <input id="xmpExposureRange" type="range" min="-5" max="5" step="0.01" value="0" disabled />
+              <output id="xmpExposureValue">0.00</output>
+            </label>
+
+            <label class="inline-control">
+              <span>Temperature</span>
+              <input id="xmpTemperatureRange" type="range" min="2000" max="50000" step="50" value="5500" disabled />
+              <output id="xmpTemperatureValue">5500</output>
+            </label>
+
+            <label class="inline-control">
+              <span>Tint</span>
+              <input id="xmpTintRange" type="range" min="-150" max="150" step="1" value="0" disabled />
+              <output id="xmpTintValue">0</output>
+            </label>
+
+            <label class="inline-control">
+              <span>HSL Channel</span>
+              <select id="xmpHslChannel" disabled>
+                <option value="red">Red</option>
+                <option value="orange" selected>Orange</option>
+                <option value="yellow">Yellow</option>
+                <option value="green">Green</option>
+                <option value="aqua">Aqua</option>
+                <option value="blue">Blue</option>
+                <option value="purple">Purple</option>
+                <option value="magenta">Magenta</option>
+              </select>
+            </label>
+
+            <label class="inline-control">
+              <span>HSL Hue</span>
+              <input id="xmpHslHueRange" type="range" min="-100" max="100" step="1" value="0" disabled />
+              <output id="xmpHslHueValue">0</output>
+            </label>
+
+            <label class="inline-control">
+              <span>HSL Saturation</span>
+              <input id="xmpHslSaturationRange" type="range" min="-100" max="100" step="1" value="0" disabled />
+              <output id="xmpHslSaturationValue">0</output>
+            </label>
+
+            <label class="inline-control">
+              <span>HSL Luminance</span>
+              <input id="xmpHslLuminanceRange" type="range" min="-100" max="100" step="1" value="0" disabled />
+              <output id="xmpHslLuminanceValue">0</output>
+            </label>
+
+            <pre id="xmpPreviewText" class="xmp-preview">No XMP parameters yet.</pre>
+          </section>
 
           <p id="statusText" class="status">等待上传图片</p>
           <pre id="statsText" class="stats"></pre>
@@ -145,6 +205,8 @@
       </section>
     </main>
 
+    <script src="./xmp-generator.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>
+
