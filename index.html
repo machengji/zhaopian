@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TonePort - Color Transfer Studio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="bg-shape bg-shape-a"></div>
+    <div class="bg-shape bg-shape-b"></div>
+    <main class="app-shell">
+      <section class="title-block">
+        <p class="eyebrow">Lightroom-like Web Tool</p>
+        <h1>TonePort</h1>
+        <p class="subtitle">
+          上传参考图和目标图，自动完成色调迁移，支持经典 Reinhard 与相关性增强模式。
+        </p>
+      </section>
+
+      <section class="workspace-grid">
+        <aside class="control-panel glass">
+          <div class="panel-group">
+            <h2>1. 上传图片</h2>
+            <label class="file-input">
+              <span>参考图（提取色调）</span>
+              <input id="sourceInput" type="file" accept="image/*" />
+            </label>
+            <label class="file-input">
+              <span>目标图（应用色调）</span>
+              <input id="targetInput" type="file" accept="image/*" />
+            </label>
+            <div class="thumb-grid">
+              <figure>
+                <figcaption>参考图</figcaption>
+                <img id="sourceThumb" alt="参考图预览" />
+              </figure>
+              <figure>
+                <figcaption>目标图</figcaption>
+                <img id="targetThumb" alt="目标图预览" />
+              </figure>
+            </div>
+          </div>
+
+          <div class="panel-group">
+            <h2>2. 算法参数</h2>
+            <label class="inline-control">
+              <span>算法</span>
+              <select id="algorithmSelect">
+                <option value="reinhard">Reinhard (LAB 均值/方差)</option>
+                <option value="enhanced">Enhanced (a/b 相关性增强)</option>
+              </select>
+            </label>
+            <label class="inline-control">
+              <span>迁移强度</span>
+              <input id="strengthRange" type="range" min="0" max="100" value="100" />
+              <output id="strengthValue">100%</output>
+            </label>
+            <label class="inline-control">
+              <span>饱和度</span>
+              <input id="saturationRange" type="range" min="20" max="180" value="100" />
+              <output id="saturationValue">1.00x</output>
+            </label>
+            <label class="inline-control checkbox-control">
+              <input id="invertToggle" type="checkbox" />
+              <span>先反色再做色调迁移</span>
+            </label>
+          </div>
+
+          <div class="action-row">
+            <button id="processBtn" class="btn btn-primary">3. 开始迁移</button>
+            <button id="downloadBtn" class="btn btn-secondary" disabled>下载结果</button>
+          </div>
+
+          <p id="statusText" class="status">等待上传图片</p>
+          <pre id="statsText" class="stats"></pre>
+        </aside>
+
+        <section class="preview-panel glass">
+          <div class="preview-head">
+            <h2>4. 预览结果</h2>
+            <p>拖动滑杆查看前后变化</p>
+          </div>
+          <div class="compare-box" id="compareBox">
+            <canvas id="beforeCanvas" aria-label="迁移前"></canvas>
+            <div class="after-layer" id="afterLayer">
+              <canvas id="afterCanvas" aria-label="迁移后"></canvas>
+            </div>
+            <input
+              id="compareSlider"
+              class="compare-slider"
+              type="range"
+              min="0"
+              max="100"
+              value="50"
+            />
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
