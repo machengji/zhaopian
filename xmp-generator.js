@@ -12,6 +12,31 @@ class XMPGenerator {
     };
   }
 
+  applyFujiPreset(baseSettings, fujiPresetKey, amount = 1) {
+    const working = normalizeSettings({ ...(baseSettings || {}) });
+    const key = String(fujiPresetKey || "none");
+    const profile = FUJI_XMP_PRESETS[key];
+    const intensity = clamp(toNumber(amount, 1), 0, 1);
+    if (!profile || intensity <= 0) {
+      return working;
+    }
+
+    if (profile.mode === "absolute") {
+      for (const [settingKey, targetValueRaw] of Object.entries(profile.settings || {})) {
+        const current = toNumber(working[settingKey], 0);
+        const targetValue = toNumber(targetValueRaw, current);
+        working[settingKey] = current + (targetValue - current) * intensity;
+      }
+      return normalizeSettings(working);
+    }
+
+    for (const [settingKey, delta] of Object.entries(profile.adjustments || {})) {
+      const current = toNumber(working[settingKey], 0);
+      working[settingKey] = current + toNumber(delta, 0) * intensity;
+    }
+    return normalizeSettings(working);
+  }
+
   calculateFromTransfer(input) {
     const sourceStats = input?.sourceStats;
     const targetStats = input?.targetStats;
@@ -145,6 +170,239 @@ ${attrText}
 <?xpacket end="w"?>`;
   }
 }
+
+const FUJI_XMP_PRESETS = {
+  none: {
+    label: "None",
+    adjustments: {},
+  },
+  luke_pro_400h: {
+    label: "Luke Pro 400H (Official)",
+    mode: "absolute",
+    source: "presets/luke/Lukes-Fuji-Pro-400H-Preset.xmp",
+    settings: {
+      exposure: 0.31,
+      contrast: 10,
+      highlights: -75,
+      shadows: 56,
+      whites: 5,
+      blacks: -15,
+      temperature: 5850,
+      tint: 20,
+      vibrance: -10,
+      saturation: 2,
+      clarity: 5,
+      texture: 4,
+      grain: 55,
+      hueRed: -23,
+      hueOrange: -33,
+      hueYellow: -9,
+      hueGreen: 40,
+      hueAqua: -15,
+      hueBlue: -25,
+      huePurple: 0,
+      hueMagenta: 0,
+      saturationRed: 15,
+      saturationOrange: -10,
+      saturationYellow: -21,
+      saturationGreen: -57,
+      saturationAqua: -15,
+      saturationBlue: -25,
+      saturationPurple: 0,
+      saturationMagenta: 0,
+      luminanceRed: 17,
+      luminanceOrange: 0,
+      luminanceYellow: 40,
+      luminanceGreen: 0,
+      luminanceAqua: 0,
+      luminanceBlue: 5,
+      luminancePurple: 0,
+      luminanceMagenta: 0,
+    },
+  },
+  luke_cool_chrome: {
+    label: "Luke Cool Chrome (Official)",
+    mode: "absolute",
+    source: "presets/luke/Fujifilm-Cool-Color-Preset.xmp",
+    settings: {
+      exposure: 0.36,
+      contrast: 19,
+      highlights: -50,
+      shadows: 14,
+      whites: -11,
+      blacks: -12,
+      vibrance: -5,
+      saturation: -10,
+      clarity: 0,
+    },
+  },
+  luke_natura_1600: {
+    label: "Luke Natura 1600 (Official)",
+    mode: "absolute",
+    source: "presets/luke/Natura-1600.xmp",
+    settings: {
+      exposure: 0.19,
+      contrast: 25,
+      vibrance: 5,
+      hueRed: 7,
+      hueOrange: 0,
+      hueYellow: 35,
+      hueGreen: 0,
+      hueAqua: 0,
+      hueBlue: -17,
+      huePurple: 0,
+      hueMagenta: 0,
+      saturationRed: 2,
+      saturationOrange: -15,
+      saturationYellow: -25,
+      saturationGreen: 0,
+      saturationAqua: -45,
+      saturationBlue: -30,
+      saturationPurple: 0,
+      saturationMagenta: 0,
+      luminanceRed: -28,
+      luminanceOrange: 20,
+      luminanceYellow: 18,
+      luminanceGreen: -25,
+      luminanceAqua: 0,
+      luminanceBlue: -7,
+      luminancePurple: 0,
+      luminanceMagenta: 0,
+    },
+  },
+  provia: {
+    label: "Provia / Standard",
+    adjustments: {
+      contrast: 4,
+      vibrance: 6,
+      saturation: 2,
+      hueBlue: -2,
+      saturationBlue: 8,
+      saturationGreen: 5,
+    },
+  },
+  velvia: {
+    label: "Velvia / Vivid",
+    adjustments: {
+      contrast: 14,
+      vibrance: 22,
+      saturation: 18,
+      highlights: -8,
+      shadows: 6,
+      hueBlue: -4,
+      saturationBlue: 24,
+      saturationGreen: 12,
+      luminanceBlue: -8,
+    },
+  },
+  astia: {
+    label: "Astia / Soft",
+    adjustments: {
+      contrast: -12,
+      highlights: -8,
+      shadows: 16,
+      vibrance: 8,
+      saturation: -4,
+      tint: 4,
+      hueOrange: -4,
+      saturationOrange: 10,
+      luminanceOrange: 8,
+      saturationBlue: -6,
+    },
+  },
+  classic_chrome: {
+    label: "Classic Chrome",
+    adjustments: {
+      contrast: 10,
+      highlights: -12,
+      shadows: 14,
+      vibrance: -22,
+      saturation: -18,
+      hueBlue: -12,
+      saturationBlue: -24,
+      luminanceBlue: -18,
+      saturationGreen: -20,
+      hueYellow: 6,
+      grain: 18,
+      vignette: -16,
+    },
+  },
+  pro_400h: {
+    label: "Pro 400H",
+    adjustments: {
+      contrast: -10,
+      highlights: -16,
+      shadows: 18,
+      vibrance: 6,
+      saturation: -8,
+      temperature: -250,
+      tint: 6,
+      hueGreen: -6,
+      saturationGreen: -10,
+      hueBlue: -4,
+      saturationBlue: -8,
+      luminanceOrange: 10,
+      grain: 20,
+    },
+  },
+  pro_neg_hi: {
+    label: "Pro Neg. Hi",
+    adjustments: {
+      contrast: 18,
+      highlights: -8,
+      shadows: 10,
+      vibrance: -4,
+      saturation: -8,
+      temperature: 120,
+      tint: 2,
+      saturationOrange: 6,
+      luminanceOrange: 8,
+    },
+  },
+  pro_neg_std: {
+    label: "Pro Neg. Std",
+    adjustments: {
+      contrast: 6,
+      highlights: -6,
+      shadows: 12,
+      vibrance: -2,
+      saturation: -6,
+      temperature: 80,
+      tint: 1,
+      saturationOrange: 4,
+      luminanceOrange: 6,
+    },
+  },
+  eterna: {
+    label: "Eterna",
+    adjustments: {
+      contrast: -16,
+      highlights: -12,
+      shadows: 10,
+      vibrance: -24,
+      saturation: -22,
+      dehaze: -4,
+      hueBlue: -8,
+      saturationBlue: -18,
+      luminanceBlue: -10,
+      saturationGreen: -12,
+    },
+  },
+  acros: {
+    label: "Acros",
+    adjustments: {
+      saturation: -100,
+      vibrance: -100,
+      contrast: 18,
+      highlights: -20,
+      shadows: 24,
+      texture: 20,
+      clarity: 18,
+      grain: 28,
+      vignette: -20,
+    },
+  },
+};
 
 function applyPresetStyle(settings, presetKey, strength) {
   const style = {

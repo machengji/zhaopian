@@ -5,9 +5,13 @@ const targetThumb = document.getElementById("targetThumb");
 const processBtn = document.getElementById("processBtn");
 const downloadBtn = document.getElementById("downloadBtn");
 const exportPresetBtn = document.getElementById("exportPresetBtn");
+const applyPresetBtn = document.getElementById("applyPresetBtn");
 const xmpResetBtn = document.getElementById("xmpResetBtn");
 const xmpPreviewHint = document.getElementById("xmpPreviewHint");
 const xmpPreviewText = document.getElementById("xmpPreviewText");
+const xmpFujiPreset = document.getElementById("xmpFujiPreset");
+const xmpFujiStrengthRange = document.getElementById("xmpFujiStrengthRange");
+const xmpFujiStrengthValue = document.getElementById("xmpFujiStrengthValue");
 const xmpExposureRange = document.getElementById("xmpExposureRange");
 const xmpExposureValue = document.getElementById("xmpExposureValue");
 const xmpTemperatureRange = document.getElementById("xmpTemperatureRange");
@@ -86,6 +90,8 @@ const state = {
   xmpBaseSettings: null,
   xmpManualSettings: null,
   xmpHslChannel: "orange",
+  xmpFujiPreset: "none",
+  xmpFujiStrength: 1,
   worker: null,
   workerJobs: new Map(),
   nextJobId: 1,
@@ -122,6 +128,16 @@ compareSlider.addEventListener("input", () => {
 strengthRange.addEventListener("input", syncUiOutputs);
 saturationRange.addEventListener("input", syncUiOutputs);
 lumaPreserveRange.addEventListener("input", syncUiOutputs);
+xmpFujiPreset?.addEventListener("change", () => {
+  state.xmpFujiPreset = xmpFujiPreset.value || "none";
+  applyFujiPresetToManual();
+});
+xmpFujiStrengthRange?.addEventListener("input", () => {
+  const ratio = Number(xmpFujiStrengthRange.value) / 100;
+  state.xmpFujiStrength = clampNum(ratio, 0, 1);
+  syncXmpFujiControls();
+  applyFujiPresetToManual();
+});
 xmpExposureRange?.addEventListener("input", () => {
   updateXmpBasicSetting("exposure", Number(xmpExposureRange.value));
 });
@@ -147,6 +163,9 @@ xmpHslLuminanceRange?.addEventListener("input", () => {
 });
 xmpResetBtn?.addEventListener("click", () => {
   resetXmpAdjustments();
+});
+applyPresetBtn?.addEventListener("click", async () => {
+  await applyCurrentPresetToImage();
 });
 
 recommendBtn.addEventListener("click", async () => {
@@ -446,6 +465,10 @@ function invalidateLatestTransfer() {
   state.xmpBaseSettings = null;
   state.xmpManualSettings = null;
   exportPresetBtn.disabled = true;
+  if (state.targetImg && state.xmpGenerator) {
+    initializeXmpDefaultsForTarget();
+    return;
+  }
   setXmpControlsEnabled(false);
   renderXmpPreview();
 }
@@ -504,6 +527,25 @@ function initializeXmpFromLatestTransfer() {
   if (!XMP_HSL_CHANNELS.includes(state.xmpHslChannel)) {
     state.xmpHslChannel = "orange";
   }
+  state.xmpFujiPreset = xmpFujiPreset?.value || state.xmpFujiPreset || "none";
+  state.xmpFujiStrength = clampNum(Number(xmpFujiStrengthRange?.value || 100) / 100, 0, 1);
+  applyFujiPresetToManual(false);
+  setXmpControlsEnabled(true);
+  syncXmpControls();
+  renderXmpPreview();
+}
+
+function initializeXmpDefaultsForTarget() {
+  if (!state.targetImg || !state.xmpGenerator) {
+    setXmpControlsEnabled(false);
+    renderXmpPreview();
+    return;
+  }
+  state.xmpBaseSettings = createNeutralXmpSettings();
+  state.xmpManualSettings = { ...state.xmpBaseSettings };
+  state.xmpFujiPreset = xmpFujiPreset?.value || state.xmpFujiPreset || "none";
+  state.xmpFujiStrength = clampNum(Number(xmpFujiStrengthRange?.value || 100) / 100, 0, 1);
+  applyFujiPresetToManual(false);
   setXmpControlsEnabled(true);
   syncXmpControls();
   renderXmpPreview();
@@ -511,7 +553,7 @@ function initializeXmpFromLatestTransfer() {
 
 function resetXmpAdjustments() {
   if (!state.xmpBaseSettings) return;
-  state.xmpManualSettings = { ...state.xmpBaseSettings };
+  applyFujiPresetToManual(false);
   syncXmpControls();
   renderXmpPreview();
   setStatus("XMP parameters reset to auto values");
@@ -545,8 +587,322 @@ function updateXmpHslSetting(kind, rawValue) {
   renderXmpPreview();
 }
 
+function applyFujiPresetToManual(shouldSyncControls = true) {
+  if (!state.xmpBaseSettings) return;
+  const base = { ...state.xmpBaseSettings };
+  const generator = state.xmpGenerator;
+  if (generator && typeof generator.applyFujiPreset === "function") {
+    state.xmpManualSettings = generator.applyFujiPreset(base, state.xmpFujiPreset, state.xmpFujiStrength);
+  } else {
+    state.xmpManualSettings = base;
+  }
+  if (shouldSyncControls) {
+    syncXmpControls();
+  }
+  renderXmpPreview();
+}
+
+async function applyCurrentPresetToImage() {
+  if (!state.targetImg) {
+    setStatus("请先上传目标图，再应用预设", true);
+    return;
+  }
+  if (!state.xmpGenerator) {
+    setStatus("XMP generator 未加载，请刷新页面后重试", true);
+    return;
+  }
+
+  if (!state.xmpManualSettings) {
+    initializeXmpDefaultsForTarget();
+  }
+  if (!state.xmpManualSettings) {
+    setStatus("预设参数尚未初始化，请重试", true);
+    return;
+  }
+
+  const profile = QUALITY_PROFILES[qualitySelect.value] ?? QUALITY_PROFILES.balanced;
+  applyPresetBtn.disabled = true;
+  setStatus("正在应用预设到目标图...");
+  try {
+    await nextFrame();
+    const targetImageData = createScaledImageData(state.targetImg, profile.previewMaxPixels);
+    const outputImageData = applyXmpSettingsToImageData(targetImageData, state.xmpManualSettings);
+
+    drawImageData(targetImageData, beforeCanvas, beforeCtx);
+    drawImageData(outputImageData, afterCanvas, afterCtx);
+    afterLayer.style.width = `${compareSlider.value}%`;
+
+    await setDownloadFromImageData(outputImageData);
+    downloadBtn.disabled = false;
+    setStatus("预设已应用，可直接预览和下载结果");
+    statsText.textContent += `\n\n[xmp-live] fuji=${state.xmpFujiPreset || "none"}, strength=${Math.round(state.xmpFujiStrength * 100)}%`;
+  } catch (error) {
+    setStatus(`应用预设失败: ${error.message}`, true);
+  } finally {
+    applyPresetBtn.disabled = false;
+  }
+}
+
+function applyXmpSettingsToImageData(imageData, settings) {
+  const width = imageData.width;
+  const height = imageData.height;
+  const src = imageData.data;
+  const out = new Uint8ClampedArray(src.length);
+
+  const exposure = clampNum(toNum(settings.exposure, 0), -5, 5);
+  const exposureGain = 2 ** exposure;
+  const contrast = clampNum(toNum(settings.contrast, 0) / 100, -1.2, 1.2);
+  const highlights = clampNum(toNum(settings.highlights, 0) / 100, -1, 1);
+  const shadows = clampNum(toNum(settings.shadows, 0) / 100, -1, 1);
+  const whites = clampNum(toNum(settings.whites, 0) / 100, -1, 1);
+  const blacks = clampNum(toNum(settings.blacks, 0) / 100, -1, 1);
+  const saturation = clampNum(toNum(settings.saturation, 0) / 100, -1, 2);
+  const vibrance = clampNum(toNum(settings.vibrance, 0) / 100, -1, 1);
+  const clarity = clampNum(toNum(settings.clarity, 0) / 100, -1, 1);
+  const dehaze = clampNum(toNum(settings.dehaze, 0) / 100, -1, 1);
+  const texture = clampNum(toNum(settings.texture, 0) / 100, -1, 1);
+  const grain = clampNum(toNum(settings.grain, 0) / 100, 0, 1);
+  const vignette = clampNum(toNum(settings.vignette, 0) / 100, -1, 1);
+  const temperature = clampNum((toNum(settings.temperature, 5500) - 5500) / 4500, -1.5, 1.5);
+  const tint = clampNum(toNum(settings.tint, 0) / 150, -1, 1);
+  const cx = width / 2;
+  const cy = height / 2;
+  const maxDist = Math.hypot(cx, cy) || 1;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const p = (y * width + x) * 4;
+      let r = src[p] / 255;
+      let g = src[p + 1] / 255;
+      let b = src[p + 2] / 255;
+
+      r *= exposureGain;
+      g *= exposureGain;
+      b *= exposureGain;
+
+      r += temperature * 0.08 + tint * 0.03;
+      g -= tint * 0.06;
+      b -= temperature * 0.08 + tint * 0.03;
+
+      const baseContrast = 1 + contrast * 0.9;
+      r = (r - 0.5) * baseContrast + 0.5;
+      g = (g - 0.5) * baseContrast + 0.5;
+      b = (b - 0.5) * baseContrast + 0.5;
+
+      const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      const hiMask = smoothstep(0.55, 1, luma);
+      const shMask = 1 - smoothstep(0.2, 0.65, luma);
+      const toneDelta =
+        -highlights * hiMask * 0.18 +
+        shadows * shMask * 0.2 +
+        whites * hiMask * 0.12 -
+        blacks * shMask * 0.12;
+      r += toneDelta;
+      g += toneDelta;
+      b += toneDelta;
+
+      let hsl = rgbToHsl01(clamp01(r), clamp01(g), clamp01(b));
+      hsl.s = clamp01(hsl.s * (1 + saturation));
+      hsl.s = clamp01(hsl.s + (1 - hsl.s) * vibrance * 0.65);
+      hsl = applyHslAdjustments(hsl, settings);
+
+      let rgb = hslToRgb01(hsl.h, clamp01(hsl.s), clamp01(hsl.l));
+      const microContrast = 1 + clarity * 0.25 + texture * 0.15 + dehaze * 0.2;
+      rgb.r = (rgb.r - 0.5) * microContrast + 0.5;
+      rgb.g = (rgb.g - 0.5) * microContrast + 0.5;
+      rgb.b = (rgb.b - 0.5) * microContrast + 0.5;
+
+      if (grain > 0) {
+        const noise = (Math.random() - 0.5) * grain * 0.08;
+        rgb.r += noise;
+        rgb.g += noise;
+        rgb.b += noise;
+      }
+
+      if (vignette !== 0) {
+        const dist = Math.hypot(x - cx, y - cy) / maxDist;
+        const vigMask = dist ** 1.8;
+        const vigFactor = 1 + vignette * vigMask * 0.6;
+        rgb.r *= vigFactor;
+        rgb.g *= vigFactor;
+        rgb.b *= vigFactor;
+      }
+
+      out[p] = Math.round(clamp01(rgb.r) * 255);
+      out[p + 1] = Math.round(clamp01(rgb.g) * 255);
+      out[p + 2] = Math.round(clamp01(rgb.b) * 255);
+      out[p + 3] = src[p + 3];
+    }
+  }
+
+  return new ImageData(out, width, height);
+}
+
+function applyHslAdjustments(hsl, settings) {
+  let h = hsl.h;
+  let s = hsl.s;
+  let l = hsl.l;
+  const channels = [
+    { name: "Red", center: 0 },
+    { name: "Orange", center: 30 },
+    { name: "Yellow", center: 60 },
+    { name: "Green", center: 120 },
+    { name: "Aqua", center: 180 },
+    { name: "Blue", center: 240 },
+    { name: "Purple", center: 280 },
+    { name: "Magenta", center: 320 },
+  ];
+
+  for (const channel of channels) {
+    const dist = hueDistanceDeg(h, channel.center);
+    if (dist > 70) continue;
+    const weight = ((70 - dist) / 70) ** 2;
+    const hueAdj = toNum(settings[`hue${channel.name}`], 0);
+    const satAdj = toNum(settings[`saturation${channel.name}`], 0);
+    const lumAdj = toNum(settings[`luminance${channel.name}`], 0);
+    h = wrapHueDeg(h + hueAdj * weight);
+    s = clamp01(s * (1 + (satAdj / 100) * weight));
+    l = clamp01(l + (lumAdj / 100) * weight * 0.38);
+  }
+
+  return { h: wrapHueDeg(h), s: clamp01(s), l: clamp01(l) };
+}
+
+function rgbToHsl01(r, g, b) {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const d = max - min;
+  let h = 0;
+  let s = 0;
+  const l = (max + min) / 2;
+
+  if (d !== 0) {
+    s = d / (1 - Math.abs(2 * l - 1));
+    switch (max) {
+      case r:
+        h = 60 * (((g - b) / d + 6) % 6);
+        break;
+      case g:
+        h = 60 * ((b - r) / d + 2);
+        break;
+      default:
+        h = 60 * ((r - g) / d + 4);
+        break;
+    }
+  }
+  return { h, s: clamp01(s), l: clamp01(l) };
+}
+
+function hslToRgb01(h, s, l) {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const hp = (wrapHueDeg(h) / 60) % 6;
+  const x = c * (1 - Math.abs((hp % 2) - 1));
+  let r = 0;
+  let g = 0;
+  let b = 0;
+
+  if (hp >= 0 && hp < 1) {
+    r = c;
+    g = x;
+  } else if (hp < 2) {
+    r = x;
+    g = c;
+  } else if (hp < 3) {
+    g = c;
+    b = x;
+  } else if (hp < 4) {
+    g = x;
+    b = c;
+  } else if (hp < 5) {
+    r = x;
+    b = c;
+  } else {
+    r = c;
+    b = x;
+  }
+
+  const m = l - c / 2;
+  return { r: r + m, g: g + m, b: b + m };
+}
+
+function smoothstep(edge0, edge1, x) {
+  const t = clampNum((x - edge0) / (edge1 - edge0 || 1), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
+function hueDistanceDeg(a, b) {
+  const d = Math.abs(a - b) % 360;
+  return d > 180 ? 360 - d : d;
+}
+
+function wrapHueDeg(h) {
+  const out = h % 360;
+  return out < 0 ? out + 360 : out;
+}
+
+function clamp01(v) {
+  return clampNum(v, 0, 1);
+}
+
+function toNum(v, fallback = 0) {
+  return Number.isFinite(v) ? v : fallback;
+}
+
+function createNeutralXmpSettings() {
+  return {
+    exposure: 0,
+    contrast: 0,
+    highlights: 0,
+    shadows: 0,
+    whites: 0,
+    blacks: 0,
+    temperature: 5500,
+    tint: 0,
+    vibrance: 0,
+    saturation: 0,
+    clarity: 0,
+    dehaze: 0,
+    texture: 0,
+    vignette: 0,
+    grain: 0,
+    hueRed: 0,
+    hueOrange: 0,
+    hueYellow: 0,
+    hueGreen: 0,
+    hueAqua: 0,
+    hueBlue: 0,
+    huePurple: 0,
+    hueMagenta: 0,
+    saturationRed: 0,
+    saturationOrange: 0,
+    saturationYellow: 0,
+    saturationGreen: 0,
+    saturationAqua: 0,
+    saturationBlue: 0,
+    saturationPurple: 0,
+    saturationMagenta: 0,
+    luminanceRed: 0,
+    luminanceOrange: 0,
+    luminanceYellow: 0,
+    luminanceGreen: 0,
+    luminanceAqua: 0,
+    luminanceBlue: 0,
+    luminancePurple: 0,
+    luminanceMagenta: 0,
+  };
+}
+
+function syncXmpFujiControls() {
+  if (!xmpFujiPreset || !xmpFujiStrengthRange || !xmpFujiStrengthValue) return;
+  xmpFujiPreset.value = state.xmpFujiPreset || "none";
+  const strengthPct = Math.round(clampNum(state.xmpFujiStrength, 0, 1) * 100);
+  xmpFujiStrengthRange.value = String(strengthPct);
+  xmpFujiStrengthValue.textContent = `${strengthPct}%`;
+}
+
 function syncXmpControls() {
   if (!state.xmpManualSettings) return;
+  syncXmpFujiControls();
   syncXmpBasicControls();
   syncXmpHslControls();
 }
@@ -600,6 +956,9 @@ function setXmpControlsEnabled(enabled) {
   const active = Boolean(enabled && state.xmpGenerator);
   const controls = [
     xmpResetBtn,
+    applyPresetBtn,
+    xmpFujiPreset,
+    xmpFujiStrengthRange,
     xmpExposureRange,
     xmpTemperatureRange,
     xmpTintRange,
@@ -619,9 +978,13 @@ function setXmpControlsEnabled(enabled) {
     xmpPreviewHint.textContent = "XMP generator missing. Refresh the page to load preset export tools.";
     return;
   }
-  xmpPreviewHint.textContent = active
-    ? "Auto-generated from current transfer. Adjust values below, then export .xmp."
-    : "Run one transfer first, then tweak LR parameters before export.";
+  if (!active) {
+    xmpPreviewHint.textContent = "Upload target image first. You can then apply Fuji-style preset directly.";
+    return;
+  }
+  xmpPreviewHint.textContent = state.latestTransfer
+    ? "Auto-generated from current transfer. You can apply preset to image or export .xmp."
+    : "Target loaded. Pick a Fuji preset, tweak values, and click apply to preview result.";
 }
 
 function renderXmpPreview() {
@@ -634,6 +997,8 @@ function renderXmpPreview() {
 
   const keys = getXmpHslKeys(state.xmpHslChannel);
   const presetKey = state.latestTransfer?.options?.presetKey || "none";
+  const fujiPreset = state.xmpFujiPreset || "none";
+  const fujiStrength = Math.round(clampNum(state.xmpFujiStrength, 0, 1) * 100);
   xmpPreviewText.textContent = [
     `Exposure2012=${Number(settings.exposure).toFixed(2)}`,
     `Temperature=${Math.round(settings.temperature)} | Tint=${Math.round(settings.tint)}`,
@@ -641,6 +1006,7 @@ function renderXmpPreview() {
     `Highlights=${Math.round(settings.highlights)} | Shadows=${Math.round(settings.shadows)}`,
     `Whites=${Math.round(settings.whites)} | Blacks=${Math.round(settings.blacks)}`,
     `HSL(${keys.label}): Hue=${Math.round(settings[keys.hue])}, Sat=${Math.round(settings[keys.saturation])}, Lum=${Math.round(settings[keys.luminance])}`,
+    `fuji=${fujiPreset} (${fujiStrength}%)`,
     `preset=${presetKey}`,
   ].join("\n");
 }

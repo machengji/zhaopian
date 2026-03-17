@@ -125,6 +125,31 @@
             <p id="xmpPreviewHint" class="xmp-hint">Run one transfer first, then tweak LR parameters before export.</p>
 
             <label class="inline-control">
+              <span>Fuji Preset</span>
+              <select id="xmpFujiPreset" disabled>
+                <option value="none" selected>None</option>
+                <option value="luke_pro_400h">Luke Pro 400H (Official)</option>
+                <option value="luke_cool_chrome">Luke Cool Chrome (Official)</option>
+                <option value="luke_natura_1600">Luke Natura 1600 (Official)</option>
+                <option value="provia">Provia / Standard</option>
+                <option value="velvia">Velvia / Vivid</option>
+                <option value="astia">Astia / Soft</option>
+                <option value="classic_chrome">Classic Chrome</option>
+                <option value="pro_400h">Pro 400H</option>
+                <option value="pro_neg_hi">Pro Neg. Hi</option>
+                <option value="pro_neg_std">Pro Neg. Std</option>
+                <option value="eterna">Eterna</option>
+                <option value="acros">Acros (B&W)</option>
+              </select>
+            </label>
+
+            <label class="inline-control">
+              <span>Fuji Strength</span>
+              <input id="xmpFujiStrengthRange" type="range" min="0" max="100" step="1" value="100" disabled />
+              <output id="xmpFujiStrengthValue">100%</output>
+            </label>
+
+            <label class="inline-control">
               <span>Exposure</span>
               <input id="xmpExposureRange" type="range" min="-5" max="5" step="0.01" value="0" disabled />
               <output id="xmpExposureValue">0.00</output>
@@ -174,6 +199,7 @@
               <output id="xmpHslLuminanceValue">0</output>
             </label>
 
+            <button id="applyPresetBtn" class="btn btn-secondary xmp-apply-btn" type="button" disabled>应用预设到图片</button>
             <pre id="xmpPreviewText" class="xmp-preview">No XMP parameters yet.</pre>
           </section>
 
