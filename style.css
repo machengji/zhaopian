@@ -186,6 +186,17 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+.inline-with-button {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.inline-with-button .inline-control {
+  margin-bottom: 0;
+}
+
 .checkbox-control {
   display: flex;
   align-items: center;
@@ -222,6 +233,14 @@ body {
 .btn-secondary {
   background: linear-gradient(135deg, #f4d35e, #d9982f);
   color: #142033;
+}
+
+.btn-ghost {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #f5f8fc;
+  padding: 10px 12px;
+  white-space: nowrap;
 }
 
 .btn:disabled {
@@ -346,5 +365,9 @@ body {
 
   .compare-box {
     min-height: 320px;
+  }
+
+  .inline-with-button {
+    grid-template-columns: 1fr;
   }
 }

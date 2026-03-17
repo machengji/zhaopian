@@ -7,11 +7,17 @@ const downloadBtn = document.getElementById("downloadBtn");
 const statusText = document.getElementById("statusText");
 const statsText = document.getElementById("statsText");
 const algorithmSelect = document.getElementById("algorithmSelect");
+const presetSelect = document.getElementById("presetSelect");
+const qualitySelect = document.getElementById("qualitySelect");
+const recommendBtn = document.getElementById("recommendBtn");
 const strengthRange = document.getElementById("strengthRange");
 const strengthValue = document.getElementById("strengthValue");
 const saturationRange = document.getElementById("saturationRange");
 const saturationValue = document.getElementById("saturationValue");
+const lumaPreserveRange = document.getElementById("lumaPreserveRange");
+const lumaPreserveValue = document.getElementById("lumaPreserveValue");
 const invertToggle = document.getElementById("invertToggle");
+const hqExportToggle = document.getElementById("hqExportToggle");
 const compareSlider = document.getElementById("compareSlider");
 const afterLayer = document.getElementById("afterLayer");
 const beforeCanvas = document.getElementById("beforeCanvas");
@@ -19,12 +25,46 @@ const afterCanvas = document.getElementById("afterCanvas");
 const beforeCtx = beforeCanvas.getContext("2d", { willReadFrequently: true });
 const afterCtx = afterCanvas.getContext("2d", { willReadFrequently: true });
 
+const QUALITY_PROFILES = {
+  mobile: {
+    previewMaxPixels: 780000,
+    sourceMaxPixels: 620000,
+    exportMaxPixels: 1800000,
+    robustTrim: 0.025,
+  },
+  balanced: {
+    previewMaxPixels: 1500000,
+    sourceMaxPixels: 900000,
+    exportMaxPixels: 4800000,
+    robustTrim: 0.02,
+  },
+  pro: {
+    previewMaxPixels: 2500000,
+    sourceMaxPixels: 1500000,
+    exportMaxPixels: 12000000,
+    robustTrim: 0.015,
+  },
+};
+
+const PRESET_LIBRARY = {
+  none: { name: "无预设", contrast: 1.0, lBias: 0, aScale: 1.0, bScale: 1.0, aBias: 0, bBias: 0 },
+  film: { name: "胶片柔和", contrast: 0.94, lBias: 1.2, aScale: 0.95, bScale: 0.92, aBias: 0.8, bBias: 2.4 },
+  cinematic: { name: "电影青橙", contrast: 1.06, lBias: -1.6, aScale: 0.9, bScale: 1.14, aBias: -4.4, bBias: 6.6 },
+  ecom: { name: "电商清透", contrast: 1.04, lBias: 2.2, aScale: 0.88, bScale: 0.9, aBias: 0, bBias: 1.1 },
+  social: { name: "社媒高对比", contrast: 1.11, lBias: -0.8, aScale: 1.1, bScale: 1.08, aBias: 1.2, bBias: 3.2 },
+};
+
 const state = {
   sourceImg: null,
   targetImg: null,
-  outputBlobUrl: null,
   sourceThumbUrl: null,
   targetThumbUrl: null,
+  outputBlobUrl: null,
+  worker: null,
+  workerJobs: new Map(),
+  nextJobId: 1,
+  fullRenderPromise: null,
+  fullRenderReady: false,
 };
 
 sourceInput.addEventListener("change", async (event) => {
@@ -40,36 +80,28 @@ targetInput.addEventListener("change", async (event) => {
   if (!file) return;
   state.targetImg = await fileToImage(file);
   setThumbPreview("target", file);
-  drawToCanvas(state.targetImg, beforeCanvas, beforeCtx);
-  drawToCanvas(state.targetImg, afterCanvas, afterCtx);
+  drawScaledImage(state.targetImg, beforeCanvas, beforeCtx, QUALITY_PROFILES.mobile.previewMaxPixels);
+  drawScaledImage(state.targetImg, afterCanvas, afterCtx, QUALITY_PROFILES.mobile.previewMaxPixels);
   setStatus("目标图已加载，可开始迁移");
-});
-
-strengthRange.addEventListener("input", () => {
-  strengthValue.textContent = `${strengthRange.value}%`;
-});
-
-saturationRange.addEventListener("input", () => {
-  const value = Number(saturationRange.value) / 100;
-  saturationValue.textContent = `${value.toFixed(2)}x`;
 });
 
 compareSlider.addEventListener("input", () => {
   afterLayer.style.width = `${compareSlider.value}%`;
 });
 
-window.addEventListener("beforeunload", () => {
-  if (state.outputBlobUrl) URL.revokeObjectURL(state.outputBlobUrl);
-  if (state.sourceThumbUrl) URL.revokeObjectURL(state.sourceThumbUrl);
-  if (state.targetThumbUrl) URL.revokeObjectURL(state.targetThumbUrl);
-});
+strengthRange.addEventListener("input", syncUiOutputs);
+saturationRange.addEventListener("input", syncUiOutputs);
+lumaPreserveRange.addEventListener("input", syncUiOutputs);
 
-downloadBtn.addEventListener("click", () => {
-  if (!state.outputBlobUrl) return;
-  const link = document.createElement("a");
-  link.href = state.outputBlobUrl;
-  link.download = "toneport-result.png";
-  link.click();
+recommendBtn.addEventListener("click", async () => {
+  if (!state.sourceImg || !state.targetImg) {
+    setStatus("请先上传参考图和目标图", true);
+    return;
+  }
+  setStatus("正在分析图片并给出推荐配置...");
+  const recommendation = await recommendConfig(state.sourceImg, state.targetImg);
+  applyRecommendation(recommendation);
+  setStatus(`AI 推荐已应用：${recommendation.reason}`);
 });
 
 processBtn.addEventListener("click", async () => {
@@ -78,39 +110,240 @@ processBtn.addEventListener("click", async () => {
     return;
   }
 
-  setStatus("正在分析颜色统计并迁移，请稍候...");
   processBtn.disabled = true;
   downloadBtn.disabled = true;
+  state.fullRenderPromise = null;
+  state.fullRenderReady = false;
 
   try {
-    const opts = {
-      mode: algorithmSelect.value,
-      strength: Number(strengthRange.value) / 100,
-      saturation: Number(saturationRange.value) / 100,
-      invert: invertToggle.checked,
-    };
-    const result = await colorTransfer(state.sourceImg, state.targetImg, opts);
-    drawImageData(result.imageData, afterCanvas, afterCtx);
-    drawToCanvas(state.targetImg, beforeCanvas, beforeCtx);
-    afterLayer.style.width = `${compareSlider.value}%`;
+    const options = getProcessOptions();
+    const profile = QUALITY_PROFILES[qualitySelect.value] ?? QUALITY_PROFILES.balanced;
 
-    if (state.outputBlobUrl) {
-      URL.revokeObjectURL(state.outputBlobUrl);
-    }
-    state.outputBlobUrl = await canvasToObjectUrl(afterCanvas);
+    setStatus("正在生成快速预览...");
+    const previewResult = await runTransferPass(options, {
+      sourceMaxPixels: profile.sourceMaxPixels,
+      targetMaxPixels: profile.previewMaxPixels,
+      robustTrim: profile.robustTrim,
+      progressPrefix: "预览迁移",
+    });
+
+    drawImageData(previewResult.targetImageData, beforeCanvas, beforeCtx);
+    drawImageData(previewResult.outputImageData, afterCanvas, afterCtx);
+    afterLayer.style.width = `${compareSlider.value}%`;
+    statsText.textContent = renderStats(previewResult, options, "preview");
+
+    await setDownloadFromImageData(previewResult.outputImageData);
     downloadBtn.disabled = false;
-    setStatus("迁移完成，可预览和下载");
-    statsText.textContent = renderStats(result.stats, opts);
+    setStatus("预览完成，可直接下载；若开启高清导出会在后台继续生成");
+
+    if (hqExportToggle.checked) {
+      state.fullRenderPromise = runHighQualityExport(options, profile).catch((error) => {
+        setStatus(`高清导出失败，已保留预览下载：${error.message}`, true);
+        throw error;
+      });
+    }
   } catch (error) {
-    setStatus(`处理失败: ${error.message}`, true);
+    setStatus(`处理失败：${error.message}`, true);
   } finally {
     processBtn.disabled = false;
   }
 });
 
-function setStatus(text, isError = false) {
-  statusText.textContent = text;
-  statusText.style.color = isError ? "var(--danger)" : "var(--accent)";
+downloadBtn.addEventListener("click", async () => {
+  if (state.fullRenderPromise && !state.fullRenderReady) {
+    downloadBtn.disabled = true;
+    setStatus("高清结果生成中，请稍候...");
+    try {
+      await state.fullRenderPromise;
+    } catch (error) {
+      setStatus(`高清导出失败，已回退预览下载：${error.message}`, true);
+    } finally {
+      downloadBtn.disabled = false;
+    }
+  }
+
+  if (!state.outputBlobUrl) {
+    setStatus("当前没有可下载结果，请先迁移", true);
+    return;
+  }
+
+  const link = document.createElement("a");
+  link.href = state.outputBlobUrl;
+  link.download = `toneport-${Date.now()}.png`;
+  link.click();
+});
+
+window.addEventListener("beforeunload", () => {
+  if (state.sourceThumbUrl) URL.revokeObjectURL(state.sourceThumbUrl);
+  if (state.targetThumbUrl) URL.revokeObjectURL(state.targetThumbUrl);
+  if (state.outputBlobUrl) URL.revokeObjectURL(state.outputBlobUrl);
+  if (state.worker) state.worker.terminate();
+});
+
+function ensureWorker() {
+  if (state.worker) return state.worker;
+  if (typeof Worker === "undefined") {
+    throw new Error("当前浏览器不支持 Worker，建议升级浏览器");
+  }
+  const worker = new Worker("./worker.js");
+  worker.addEventListener("message", (event) => {
+    const message = event.data ?? {};
+    const job = state.workerJobs.get(message.id);
+    if (!job) return;
+    if (message.type === "progress") {
+      if (job.onProgress) job.onProgress(message.progress ?? 0);
+      return;
+    }
+    if (message.type === "done") {
+      state.workerJobs.delete(message.id);
+      job.resolve(message.payload);
+      return;
+    }
+    if (message.type === "error") {
+      state.workerJobs.delete(message.id);
+      job.reject(new Error(message.error || "Worker 处理失败"));
+    }
+  });
+  state.worker = worker;
+  return worker;
+}
+
+function postWorkerTransfer(payload, onProgress) {
+  const worker = ensureWorker();
+  const id = state.nextJobId++;
+  return new Promise((resolve, reject) => {
+    state.workerJobs.set(id, { resolve, reject, onProgress });
+    worker.postMessage({ id, type: "transfer", payload }, [payload.source.buffer, payload.target.buffer]);
+  });
+}
+
+async function runTransferPass(options, profile) {
+  await nextFrame();
+  const sourceImageData = createScaledImageData(state.sourceImg, profile.sourceMaxPixels);
+  const targetImageData = createScaledImageData(state.targetImg, profile.targetMaxPixels);
+  const workerSource = new Uint8ClampedArray(sourceImageData.data);
+  const workerTarget = new Uint8ClampedArray(targetImageData.data);
+
+  const start = performance.now();
+  const result = await postWorkerTransfer(
+    {
+      source: {
+        width: sourceImageData.width,
+        height: sourceImageData.height,
+        buffer: workerSource.buffer,
+      },
+      target: {
+        width: targetImageData.width,
+        height: targetImageData.height,
+        buffer: workerTarget.buffer,
+      },
+      options: {
+        ...options,
+        robustTrim: profile.robustTrim,
+      },
+    },
+    (progress) => {
+      const pct = Math.round(progress * 100);
+      setStatus(`${profile.progressPrefix}：${pct}%`);
+    }
+  );
+  const durationMs = performance.now() - start;
+
+  return {
+    width: result.width,
+    height: result.height,
+    outputImageData: new ImageData(new Uint8ClampedArray(result.buffer), result.width, result.height),
+    targetImageData,
+    stats: result.stats,
+    durationMs,
+  };
+}
+
+async function runHighQualityExport(options, qualityProfile) {
+  try {
+    setStatus("后台生成高清下载中...");
+    const exportResult = await runTransferPass(options, {
+      sourceMaxPixels: Math.min(qualityProfile.sourceMaxPixels * 1.4, 1800000),
+      targetMaxPixels: qualityProfile.exportMaxPixels,
+      robustTrim: qualityProfile.robustTrim,
+      progressPrefix: "高清导出",
+    });
+    await setDownloadFromImageData(exportResult.outputImageData);
+    state.fullRenderReady = true;
+    setStatus("高清结果已就绪，可下载");
+    statsText.textContent += `\n\n[高清] ${exportResult.width}x${exportResult.height}, ${exportResult.durationMs.toFixed(0)}ms`;
+  } catch (error) {
+    throw error;
+  }
+}
+
+function getProcessOptions() {
+  return {
+    mode: algorithmSelect.value,
+    preset: PRESET_LIBRARY[presetSelect.value] ?? PRESET_LIBRARY.none,
+    strength: Number(strengthRange.value) / 100,
+    saturation: Number(saturationRange.value) / 100,
+    lumaPreserve: Number(lumaPreserveRange.value) / 100,
+    invert: invertToggle.checked,
+  };
+}
+
+function createScaledImageData(image, maxPixels) {
+  const { width, height } = fitByMaxPixels(image.naturalWidth, image.naturalHeight, maxPixels);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(image, 0, 0, width, height);
+  return ctx.getImageData(0, 0, width, height);
+}
+
+function drawScaledImage(image, canvas, ctx, maxPixels) {
+  const { width, height } = fitByMaxPixels(image.naturalWidth, image.naturalHeight, maxPixels);
+  canvas.width = width;
+  canvas.height = height;
+  ctx.clearRect(0, 0, width, height);
+  ctx.drawImage(image, 0, 0, width, height);
+}
+
+function drawImageData(imageData, canvas, ctx) {
+  canvas.width = imageData.width;
+  canvas.height = imageData.height;
+  ctx.putImageData(imageData, 0, 0);
+}
+
+function fitByMaxPixels(width, height, maxPixels) {
+  if (!maxPixels || width * height <= maxPixels) {
+    return { width, height };
+  }
+  const scale = Math.sqrt(maxPixels / (width * height));
+  return {
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale)),
+  };
+}
+
+async function setDownloadFromImageData(imageData) {
+  const canvas = document.createElement("canvas");
+  canvas.width = imageData.width;
+  canvas.height = imageData.height;
+  const ctx = canvas.getContext("2d");
+  ctx.putImageData(imageData, 0, 0);
+  const blobUrl = await canvasToObjectUrl(canvas);
+  if (state.outputBlobUrl) URL.revokeObjectURL(state.outputBlobUrl);
+  state.outputBlobUrl = blobUrl;
+}
+
+function canvasToObjectUrl(canvas) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        reject(new Error("导出结果失败"));
+        return;
+      }
+      resolve(URL.createObjectURL(blob));
+    }, "image/png");
+  });
 }
 
 function fileToImage(file) {
@@ -129,363 +362,146 @@ function fileToImage(file) {
   });
 }
 
-function drawToCanvas(image, canvas, ctx) {
-  canvas.width = image.naturalWidth;
-  canvas.height = image.naturalHeight;
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-}
-
-function drawImageData(imageData, canvas, ctx) {
-  canvas.width = imageData.width;
-  canvas.height = imageData.height;
-  ctx.putImageData(imageData, 0, 0);
-}
-
-function canvasToObjectUrl(canvas) {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => {
-      if (!blob) {
-        reject(new Error("导出结果失败"));
-        return;
-      }
-      resolve(URL.createObjectURL(blob));
-    }, "image/png");
-  });
-}
-
 function setThumbPreview(type, file) {
-  const nextUrl = URL.createObjectURL(file);
+  const url = URL.createObjectURL(file);
   if (type === "source") {
     if (state.sourceThumbUrl) URL.revokeObjectURL(state.sourceThumbUrl);
-    state.sourceThumbUrl = nextUrl;
-    sourceThumb.src = nextUrl;
+    state.sourceThumbUrl = url;
+    sourceThumb.src = url;
     return;
   }
   if (state.targetThumbUrl) URL.revokeObjectURL(state.targetThumbUrl);
-  state.targetThumbUrl = nextUrl;
-  targetThumb.src = nextUrl;
+  state.targetThumbUrl = url;
+  targetThumb.src = url;
 }
 
-async function colorTransfer(sourceImg, targetImg, opts) {
-  await nextFrame();
+async function recommendConfig(sourceImage, targetImage) {
+  const src = sampleVisualStats(sourceImage);
+  const tgt = sampleVisualStats(targetImage);
 
-  const srcCanvas = document.createElement("canvas");
-  const srcCtx = srcCanvas.getContext("2d", { willReadFrequently: true });
-  srcCanvas.width = sourceImg.naturalWidth;
-  srcCanvas.height = sourceImg.naturalHeight;
-  srcCtx.drawImage(sourceImg, 0, 0);
-  const srcData = srcCtx.getImageData(0, 0, srcCanvas.width, srcCanvas.height);
-
-  const tgtCanvas = document.createElement("canvas");
-  const tgtCtx = tgtCanvas.getContext("2d", { willReadFrequently: true });
-  tgtCanvas.width = targetImg.naturalWidth;
-  tgtCanvas.height = targetImg.naturalHeight;
-  tgtCtx.drawImage(targetImg, 0, 0);
-  const tgtData = tgtCtx.getImageData(0, 0, tgtCanvas.width, tgtCanvas.height);
-
-  const sourceLab = rgbaToLabArray(srcData.data, false);
-  const targetLab = rgbaToLabArray(tgtData.data, opts.invert);
-  const sourceStats = labMeanStd(sourceLab);
-  const targetStats = labMeanStd(targetLab);
-  const sourceAB = abCovariance(sourceLab);
-  const targetAB = abCovariance(targetLab);
-  const enhanceMat = computeAbTransform(sourceAB, targetAB);
-
-  const outData = new Uint8ClampedArray(tgtData.data.length);
-  const n = targetLab.length / 3;
-  const epsilon = 1e-6;
-
-  for (let i = 0; i < n; i += 1) {
-    const j = i * 3;
-    const p = i * 4;
-    const l = targetLab[j];
-    const a = targetLab[j + 1];
-    const b = targetLab[j + 2];
-
-    const lMapped =
-      ((l - targetStats.mean[0]) * sourceStats.std[0]) / (targetStats.std[0] + epsilon) +
-      sourceStats.mean[0];
-
-    let aMapped;
-    let bMapped;
-    if (opts.mode === "enhanced") {
-      const da = a - targetAB.mean[0];
-      const db = b - targetAB.mean[1];
-      aMapped = enhanceMat[0] * da + enhanceMat[1] * db + sourceAB.mean[0];
-      bMapped = enhanceMat[2] * da + enhanceMat[3] * db + sourceAB.mean[1];
-    } else {
-      aMapped =
-        ((a - targetStats.mean[1]) * sourceStats.std[1]) / (targetStats.std[1] + epsilon) +
-        sourceStats.mean[1];
-      bMapped =
-        ((b - targetStats.mean[2]) * sourceStats.std[2]) / (targetStats.std[2] + epsilon) +
-        sourceStats.mean[2];
-    }
-
-    aMapped *= opts.saturation;
-    bMapped *= opts.saturation;
-
-    const mappedRgb = labToRgb(clamp(lMapped, 0, 100), clamp(aMapped, -128, 127), clamp(bMapped, -128, 127));
-    const blend = opts.strength;
-    const srcR = tgtData.data[p];
-    const srcG = tgtData.data[p + 1];
-    const srcB = tgtData.data[p + 2];
-
-    outData[p] = clamp(srcR * (1 - blend) + mappedRgb[0] * blend, 0, 255);
-    outData[p + 1] = clamp(srcG * (1 - blend) + mappedRgb[1] * blend, 0, 255);
-    outData[p + 2] = clamp(srcB * (1 - blend) + mappedRgb[2] * blend, 0, 255);
-    outData[p + 3] = tgtData.data[p + 3];
-  }
-
-  return {
-    imageData: new ImageData(outData, tgtData.width, tgtData.height),
-    stats: {
-      sourceStats,
-      targetStats,
-      sourceAB,
-      targetAB,
-    },
+  const recommendation = {
+    algorithm: "reinhard",
+    preset: "none",
+    quality: detectDefaultQuality(),
+    strength: 90,
+    saturation: 100,
+    lumaPreserve: 40,
+    reason: "基于图像颜色分布推荐了平衡配置",
   };
-}
 
-function rgbaToLabArray(rgba, invert) {
-  const n = rgba.length / 4;
-  const out = new Float32Array(n * 3);
-
-  for (let i = 0; i < n; i += 1) {
-    const p = i * 4;
-    const j = i * 3;
-    let r = rgba[p];
-    let g = rgba[p + 1];
-    let b = rgba[p + 2];
-
-    if (invert) {
-      r = 255 - r;
-      g = 255 - g;
-      b = 255 - b;
-    }
-
-    const lab = rgbToLab(r, g, b);
-    out[j] = lab[0];
-    out[j + 1] = lab[1];
-    out[j + 2] = lab[2];
-  }
-  return out;
-}
-
-function labMeanStd(labArray) {
-  const n = labArray.length / 3;
-  const mean = [0, 0, 0];
-  const variance = [0, 0, 0];
-  const std = [0, 0, 0];
-
-  for (let i = 0; i < n; i += 1) {
-    const j = i * 3;
-    mean[0] += labArray[j];
-    mean[1] += labArray[j + 1];
-    mean[2] += labArray[j + 2];
-  }
-
-  mean[0] /= n;
-  mean[1] /= n;
-  mean[2] /= n;
-
-  for (let i = 0; i < n; i += 1) {
-    const j = i * 3;
-    variance[0] += (labArray[j] - mean[0]) ** 2;
-    variance[1] += (labArray[j + 1] - mean[1]) ** 2;
-    variance[2] += (labArray[j + 2] - mean[2]) ** 2;
-  }
-
-  std[0] = Math.sqrt(variance[0] / Math.max(1, n - 1));
-  std[1] = Math.sqrt(variance[1] / Math.max(1, n - 1));
-  std[2] = Math.sqrt(variance[2] / Math.max(1, n - 1));
-
-  return { mean, std };
-}
-
-function abCovariance(labArray) {
-  const n = labArray.length / 3;
-  let meanA = 0;
-  let meanB = 0;
-  for (let i = 0; i < n; i += 1) {
-    const j = i * 3;
-    meanA += labArray[j + 1];
-    meanB += labArray[j + 2];
-  }
-  meanA /= n;
-  meanB /= n;
-
-  let c00 = 0;
-  let c01 = 0;
-  let c11 = 0;
-  for (let i = 0; i < n; i += 1) {
-    const j = i * 3;
-    const da = labArray[j + 1] - meanA;
-    const db = labArray[j + 2] - meanB;
-    c00 += da * da;
-    c01 += da * db;
-    c11 += db * db;
-  }
-  const denom = Math.max(1, n - 1);
-  return {
-    mean: [meanA, meanB],
-    cov: [c00 / denom, c01 / denom, c01 / denom, c11 / denom],
-  };
-}
-
-function computeAbTransform(sourceAB, targetAB) {
-  const eps = 1e-4;
-  const srcCov = regularizeCov(sourceAB.cov, eps);
-  const tgtCov = regularizeCov(targetAB.cov, eps);
-  const sqrtSrc = matrixPowerSym2(srcCov, 0.5);
-  const invSqrtTgt = matrixPowerSym2(tgtCov, -0.5);
-  return mul2x2(sqrtSrc, invSqrtTgt);
-}
-
-function regularizeCov(m, eps) {
-  return [m[0] + eps, m[1], m[2], m[3] + eps];
-}
-
-function matrixPowerSym2(m, power) {
-  const a = m[0];
-  const b = m[1];
-  const d = m[3];
-  const tr = a + d;
-  const detTerm = Math.sqrt((a - d) * (a - d) + 4 * b * b);
-  let l1 = (tr + detTerm) / 2;
-  let l2 = (tr - detTerm) / 2;
-  l1 = Math.max(l1, 1e-8);
-  l2 = Math.max(l2, 1e-8);
-
-  let v1x;
-  let v1y;
-  if (Math.abs(b) > 1e-8) {
-    v1x = l1 - d;
-    v1y = b;
+  if (tgt.whiteRatio > 0.38) {
+    recommendation.preset = "ecom";
+    recommendation.algorithm = "reinhard";
+    recommendation.saturation = 92;
+    recommendation.lumaPreserve = 58;
+    recommendation.reason = "目标图高比例浅背景，切换电商清透风格";
+  } else if (src.saturation - tgt.saturation > 0.12) {
+    recommendation.preset = "social";
+    recommendation.algorithm = "enhanced";
+    recommendation.saturation = 118;
+    recommendation.strength = 94;
+    recommendation.reason = "参考图色彩更浓郁，切换社媒高对比增强";
+  } else if (src.warmth > tgt.warmth + 8) {
+    recommendation.preset = "film";
+    recommendation.algorithm = "enhanced";
+    recommendation.saturation = 104;
+    recommendation.lumaPreserve = 46;
+    recommendation.reason = "参考图更暖，切换胶片柔和防止过硬色偏";
   } else {
-    v1x = 1;
-    v1y = 0;
+    recommendation.preset = "cinematic";
+    recommendation.algorithm = "enhanced";
+    recommendation.strength = 88;
+    recommendation.saturation = 108;
+    recommendation.lumaPreserve = 34;
+    recommendation.reason = "场景动态范围较高，切换电影青橙强化氛围";
   }
 
-  const norm = Math.hypot(v1x, v1y) || 1;
-  v1x /= norm;
-  v1y /= norm;
-  const v2x = -v1y;
-  const v2y = v1x;
+  if (recommendation.quality === "mobile") {
+    recommendation.reason += "，并启用手机优先性能档位";
+  }
 
-  const p1 = Math.pow(l1, power);
-  const p2 = Math.pow(l2, power);
+  return recommendation;
+}
 
+function sampleVisualStats(image) {
+  const sample = createScaledImageData(image, 120000);
+  const data = sample.data;
+  const n = data.length / 4;
+  let sumSat = 0;
+  let sumWarmth = 0;
+  let whitePixels = 0;
+
+  for (let i = 0; i < n; i += 1) {
+    const p = i * 4;
+    const r = data[p] / 255;
+    const g = data[p + 1] / 255;
+    const b = data[p + 2] / 255;
+
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const sat = max === 0 ? 0 : (max - min) / max;
+    const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    if (luma > 0.86 && sat < 0.12) whitePixels += 1;
+
+    sumSat += sat;
+    sumWarmth += (r - b) * 100;
+  }
+
+  return {
+    saturation: sumSat / n,
+    warmth: sumWarmth / n,
+    whiteRatio: whitePixels / n,
+  };
+}
+
+function applyRecommendation(rec) {
+  algorithmSelect.value = rec.algorithm;
+  presetSelect.value = rec.preset;
+  qualitySelect.value = rec.quality;
+  strengthRange.value = String(rec.strength);
+  saturationRange.value = String(rec.saturation);
+  lumaPreserveRange.value = String(rec.lumaPreserve);
+  syncUiOutputs();
+}
+
+function renderStats(result, options, mode) {
+  const stats = result.stats;
   return [
-    p1 * v1x * v1x + p2 * v2x * v2x,
-    p1 * v1x * v1y + p2 * v2x * v2y,
-    p1 * v1y * v1x + p2 * v2y * v2x,
-    p1 * v1y * v1y + p2 * v2y * v2y,
-  ];
-}
-
-function mul2x2(a, b) {
-  return [
-    a[0] * b[0] + a[1] * b[2],
-    a[0] * b[1] + a[1] * b[3],
-    a[2] * b[0] + a[3] * b[2],
-    a[2] * b[1] + a[3] * b[3],
-  ];
-}
-
-function rgbToLab(r, g, b) {
-  const rs = srgbToLinear(r / 255);
-  const gs = srgbToLinear(g / 255);
-  const bs = srgbToLinear(b / 255);
-
-  const x = rs * 0.4124564 + gs * 0.3575761 + bs * 0.1804375;
-  const y = rs * 0.2126729 + gs * 0.7151522 + bs * 0.072175;
-  const z = rs * 0.0193339 + gs * 0.119192 + bs * 0.9503041;
-
-  const xr = x / 0.95047;
-  const yr = y;
-  const zr = z / 1.08883;
-
-  const fx = fLab(xr);
-  const fy = fLab(yr);
-  const fz = fLab(zr);
-
-  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
-}
-
-function labToRgb(l, a, b) {
-  const fy = (l + 16) / 116;
-  const fx = fy + a / 500;
-  const fz = fy - b / 200;
-
-  const xr = invFLab(fx);
-  const yr = invFLab(fy);
-  const zr = invFLab(fz);
-
-  const x = xr * 0.95047;
-  const y = yr;
-  const z = zr * 1.08883;
-
-  let rl = x * 3.2404542 + y * -1.5371385 + z * -0.4985314;
-  let gl = x * -0.969266 + y * 1.8760108 + z * 0.041556;
-  let bl = x * 0.0556434 + y * -0.2040259 + z * 1.0572252;
-
-  rl = linearToSrgb(rl);
-  gl = linearToSrgb(gl);
-  bl = linearToSrgb(bl);
-
-  return [Math.round(clamp(rl, 0, 1) * 255), Math.round(clamp(gl, 0, 1) * 255), Math.round(clamp(bl, 0, 1) * 255)];
-}
-
-function srgbToLinear(c) {
-  return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
-}
-
-function linearToSrgb(c) {
-  const v = clamp(c, 0, 1);
-  return v <= 0.0031308 ? 12.92 * v : 1.055 * v ** (1 / 2.4) - 0.055;
-}
-
-function fLab(t) {
-  const delta = 6 / 29;
-  return t > delta ** 3 ? Math.cbrt(t) : t / (3 * delta * delta) + 4 / 29;
-}
-
-function invFLab(t) {
-  const delta = 6 / 29;
-  return t > delta ? t ** 3 : 3 * delta * delta * (t - 4 / 29);
-}
-
-function clamp(v, min, max) {
-  return Math.min(max, Math.max(min, v));
-}
-
-function renderStats(stats, opts) {
-  return [
-    `mode=${opts.mode} | strength=${opts.strength.toFixed(2)} | saturation=${opts.saturation.toFixed(2)} | invert=${opts.invert}`,
-    "",
-    `source LAB mean: ${fmtArr(stats.sourceStats.mean)}`,
-    `source LAB std : ${fmtArr(stats.sourceStats.std)}`,
-    `target LAB mean: ${fmtArr(stats.targetStats.mean)}`,
-    `target LAB std : ${fmtArr(stats.targetStats.std)}`,
-    "",
-    `source a/b mean: ${fmtArr(stats.sourceAB.mean)} cov=${fmtArr(stats.sourceAB.cov)}`,
-    `target a/b mean: ${fmtArr(stats.targetAB.mean)} cov=${fmtArr(stats.targetAB.cov)}`,
+    `[${mode}] ${result.width}x${result.height} | ${result.durationMs.toFixed(0)}ms`,
+    `algorithm=${options.mode}, preset=${options.preset.name}`,
+    `strength=${options.strength.toFixed(2)}, saturation=${options.saturation.toFixed(2)}, lumaPreserve=${options.lumaPreserve.toFixed(2)}`,
+    `source mean=${fmtArr(stats.source.mean)} std=${fmtArr(stats.source.std)}`,
+    `target mean=${fmtArr(stats.target.mean)} std=${fmtArr(stats.target.std)}`,
+    `source ab mean=${fmtArr(stats.sourceAB.mean)} cov=${fmtArr(stats.sourceAB.cov)}`,
+    `target ab mean=${fmtArr(stats.targetAB.mean)} cov=${fmtArr(stats.targetAB.cov)}`,
   ].join("\n");
 }
 
+function syncUiOutputs() {
+  strengthValue.textContent = `${strengthRange.value}%`;
+  saturationValue.textContent = `${(Number(saturationRange.value) / 100).toFixed(2)}x`;
+  lumaPreserveValue.textContent = `${lumaPreserveRange.value}%`;
+}
+
 function fmtArr(arr) {
-  return `[${arr.map((v) => Number(v).toFixed(3)).join(", ")}]`;
+  return `[${arr.map((v) => Number(v).toFixed(2)).join(", ")}]`;
+}
+
+function setStatus(text, isError = false) {
+  statusText.textContent = text;
+  statusText.style.color = isError ? "var(--danger)" : "var(--accent)";
 }
 
 function nextFrame() {
-  return new Promise((resolve) => {
-    requestAnimationFrame(() => resolve());
-  });
+  return new Promise((resolve) => requestAnimationFrame(resolve));
 }
 
-strengthValue.textContent = `${strengthRange.value}%`;
-saturationValue.textContent = `${(Number(saturationRange.value) / 100).toFixed(2)}x`;
+function detectDefaultQuality() {
+  const isMobile = window.matchMedia("(max-width: 800px)").matches;
+  const lowMem = typeof navigator.deviceMemory === "number" && navigator.deviceMemory <= 4;
+  return isMobile || lowMem ? "mobile" : "balanced";
+}
+
+qualitySelect.value = detectDefaultQuality();
+syncUiOutputs();
 afterLayer.style.width = `${compareSlider.value}%`;
